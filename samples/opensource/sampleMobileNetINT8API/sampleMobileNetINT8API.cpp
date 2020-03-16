@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 
-//! sampleINT8API.cpp
+//! sampleINT8API_mod.cpp
+//! Modified to run pre-quantized MobileNetV1 for classification from MLPerf Inference 0.5 suite.
 //! This file contains implementation showcasing usage of INT8 calibration and precision APIs.
 //! It creates classification networks such as mobilenet, vgg19, resnet-50 from onnx model file.
-//! This sample showcae setting per tensor dynamic range overriding calibrator generated scales if it exists.
-//! This sample showcase how to set computation precision of layer. It involves forcing output tensor type of the layer
-//! to particular precision. It can be run with the following command line: Command: ./sample_int8_api [-h or --help]
+//! This sample showcases setting per tensor dynamic range overriding calibrator generated scales if it exists.
+//! This sample showcases how to set computation precision of layer. It involves forcing output tensor type of the layer
+//! to particular precision. It can be run with the following command line: Command: ./sample_int8_api_mod [-h or --help]
 //! [-m modelfile] [-s per_tensor_dynamic_range_file] [-i image_file] [-r reference_file] [-d path/to/data/dir]
-//! [--verbose] [-useDLA <id>]
+//! [--verbose] [--useDLACore <id>]
 
 #include "argsParser.h"
 #include "buffers.h"
@@ -39,15 +40,13 @@
 #include <unordered_map>
 #include <vector>
 
-const std::string gSampleName = "TensorRT.sample_int8_api";
+const std::string gSampleName = "TensorRT.sample_mobilenet_int8_api";
 
 struct SampleINT8APIPreprocessing
 {
-    // Preprocessing values are available here:
-    // https://github.com/onnx/models/tree/master/models/image_classification/resnet
-    std::vector<float> mean{0.485f, 0.456f, 0.406f};
-    std::vector<float> std{0.229f, 0.224f, 0.225f};
-    float scale{255.0f};
+    // Based on: https://github.com/mlperf/inference_results_v0.5/blob/master/closed/NVIDIA/scripts/preprocess_data.py#L131
+    std::vector<char> mean{128, 128, 128};
+    // std and scale are not needed for INT8 inputs here.
     std::vector<int> inputDims{3, 224, 224};
 };
 
@@ -61,6 +60,9 @@ struct SampleINT8APIParams
     bool writeNetworkTensors{false};
     int dlaCore{-1};
     int batchSize{1};
+    int topBottomK{10};
+    bool fp32{false};
+    bool safeGpuInt8{false};
 
     SampleINT8APIPreprocessing mPreproc;
     std::string modelFileName;
@@ -74,7 +76,7 @@ struct SampleINT8APIParams
 //!
 //! \brief The SampleINT8API class implements INT8 inference on classification networks.
 //!
-//! \details INT8 API usage for setting custom int8 range for each input layer. API showcase how
+//! \details INT8 API usage for setting custom INT8 range for each input layer. API showcase how
 //!           to perform INT8 inference without calibration table
 //!
 class SampleINT8API
@@ -123,7 +125,13 @@ private:
     //!
     //! \brief Reads the ppm input image, preprocesses, and stores the result in a managed buffer
     //!
-    bool prepareInput(const samplesCommon::BufferManager& buffers);
+    template <typename input_precision_t> bool prepareInput(const samplesCommon::BufferManager& buffers);
+
+    //!
+    //! \brief Modified samplesCommon::classify with option to print output activation values
+    //!
+    template <typename result_vector_t> inline std::vector<std::string> classify_verbose(
+        const std::vector<std::string>& refVector, const result_vector_t& output, const size_t topK) const;
 
     //!
     //! \brief Verifies that the output is correct and prints it
@@ -139,11 +147,6 @@ private:
     //! \brief  Sets custom dynamic range for network tensors
     //!
     bool setDynamicRange(SampleUniquePtr<nvinfer1::INetworkDefinition>& network);
-
-    //!
-    //! \brief  Sets computation precision for network layers
-    //!
-    void setLayerPrecision(SampleUniquePtr<nvinfer1::INetworkDefinition>& network);
 
     //!
     //! \brief  Write network tensor names to a file.
@@ -183,7 +186,7 @@ void SampleINT8API::getInputOutputNames()
 }
 
 //!
-//! \brief Populate per tensor dyanamic range values
+//! \brief Populate per tensor dynamic range values
 //!
 bool SampleINT8API::readPerTensorDynamicRangeValues()
 {
@@ -210,45 +213,13 @@ bool SampleINT8API::readPerTensorDynamicRangeValues()
 }
 
 //!
-//! \brief  Sets computation precision for network layers
-//!
-void SampleINT8API::setLayerPrecision(SampleUniquePtr<nvinfer1::INetworkDefinition>& network)
-{
-    gLogInfo << "Setting Per Layer Computation Precision" << std::endl;
-    for (int i = 0; i < network->getNbLayers(); ++i)
-    {
-        auto layer = network->getLayer(i);
-        if (mParams.verbose)
-        {
-            std::string layerName = layer->getName();
-            gLogInfo << "Layer: " << layerName << ". Precision: INT8" << std::endl;
-        }
-        // set computation precision of the layer
-        layer->setPrecision(nvinfer1::DataType::kINT8);
-
-        for (int j = 0; j < layer->getNbOutputs(); ++j)
-        {
-            std::string tensorName = layer->getOutput(j)->getName();
-            if (mParams.verbose)
-            {
-                std::string tensorName = layer->getOutput(j)->getName();
-                gLogInfo << "Tensor: " << tensorName << ". OutputType: INT8" << std::endl;
-            }
-            // set output type of the tensor
-            layer->setOutputType(j, nvinfer1::DataType::kINT8);
-        }
-    }
-}
-
-//!
 //! \brief  Write network tensor names to a file.
 //!
 void SampleINT8API::writeNetworkTensorNames(const SampleUniquePtr<nvinfer1::INetworkDefinition>& network)
 {
     gLogInfo << "Sample requires to run with per tensor dynamic range." << std::endl;
-    gLogInfo << "In order to run Int8 inference without calibration, user will need to provide dynamic range for all "
-                "the network tensors."
-             << std::endl;
+    gLogInfo << "In order to run INT8 inference without calibration, user will need to provide dynamic range for all "
+                "the network tensors." << std::endl;
 
     std::ofstream tensorsFile{mParams.networkTensorsFileName};
 
@@ -279,9 +250,8 @@ void SampleINT8API::writeNetworkTensorNames(const SampleUniquePtr<nvinfer1::INet
     }
     tensorsFile.close();
     gLogInfo << "Successfully generated network tensor names. Writing: " << mParams.networkTensorsFileName << std::endl;
-    gLogInfo << "Use the generated tensor names file to create dynamic range file for Int8 inference. Follow README.md "
-                "for instructions to generate dynamic_ranges.txt file."
-             << std::endl;
+    gLogInfo << "Use the generated tensor names file to create dynamic range file for INT8 inference. Follow README.md "
+                "for instructions to generate dynamic_ranges.txt file." << std::endl;
 }
 
 //!
@@ -310,18 +280,22 @@ bool SampleINT8API::setDynamicRange(SampleUniquePtr<nvinfer1::INetworkDefinition
     for (int i = 0; i < network->getNbInputs(); ++i)
     {
         string tName = network->getInput(i)->getName();
+        // Set input type to INT8:
+        network->getInput(i)->setType(DataType::kINT8);
+        float scaleValue = 127.0f;
         if (mPerTensorDynamicRangeMap.find(tName) != mPerTensorDynamicRangeMap.end())
         {
-            network->getInput(i)->setDynamicRange(
-                -mPerTensorDynamicRangeMap.at(tName), mPerTensorDynamicRangeMap.at(tName));
+            scaleValue = mPerTensorDynamicRangeMap.at(tName);
         }
         else
         {
             if (mParams.verbose)
             {
-                gLogWarning << "Missing dynamic range for tensor: " << tName << std::endl;
+                gLogWarning << "Missing dynamic range for input tensor: " << tName << ", "
+                               "using default scales of 127." << std::endl;
             }
         }
+        network->getInput(i)->setDynamicRange(-scaleValue, scaleValue);
     }
 
     // set dynamic range for layer output tensors
@@ -330,27 +304,32 @@ bool SampleINT8API::setDynamicRange(SampleUniquePtr<nvinfer1::INetworkDefinition
         for (int j = 0; j < network->getLayer(i)->getNbOutputs(); ++j)
         {
             string tName = network->getLayer(i)->getOutput(j)->getName();
+            float scaleValue = 127.0f;
             if (mPerTensorDynamicRangeMap.find(tName) != mPerTensorDynamicRangeMap.end())
             {
-                // Calibrator generated dynamic range for network tensor can be overriden or set using below API
-                network->getLayer(i)->getOutput(j)->setDynamicRange(
-                    -mPerTensorDynamicRangeMap.at(tName), mPerTensorDynamicRangeMap.at(tName));
+                // Calibrator generated dynamic range for network tensor can be overridden or set using below API
+                scaleValue = mPerTensorDynamicRangeMap.at(tName);
             }
             else
             {
                 if (mParams.verbose)
                 {
-                    gLogWarning << "Missing dynamic range for tensor: " << tName << std::endl;
+                    gLogWarning << "Missing dynamic range for tensor: " << tName << ", "
+                                   "using default scales of 127." << std::endl;
                 }
             }
+            network->getLayer(i)->getOutput(j)->setDynamicRange(-scaleValue, scaleValue);
         }
     }
 
     if (mParams.verbose)
     {
-        gLogInfo << "Per Tensor Dynamic Range Values for the Network:" << std::endl;
+        gLogInfo << "Per Tensor Dynamic Range Values for the Network (read from the scales text file):" << std::endl;
         for (auto iter = mPerTensorDynamicRangeMap.begin(); iter != mPerTensorDynamicRangeMap.end(); ++iter)
-            gLogInfo << "Tensor: " << iter->first << ". Max Absolute Dynamic Range: " << iter->second << std::endl;
+        {
+            gLogInfo << "Tensor: " << iter->first << ". Max Absolute Dynamic Range: " << iter->second
+                     << " (resolution at INT8 after tensor quantization: " << (iter->second / 127.0f) << ")" << std::endl;
+        }
     }
     return true;
 }
@@ -358,7 +337,7 @@ bool SampleINT8API::setDynamicRange(SampleUniquePtr<nvinfer1::INetworkDefinition
 //!
 //! \brief Preprocess inputs and allocate host/device input buffers
 //!
-bool SampleINT8API::prepareInput(const samplesCommon::BufferManager& buffers)
+template <typename input_precision_t> bool SampleINT8API::prepareInput(const samplesCommon::BufferManager& buffers)
 {
     if (samplesCommon::toLower(samplesCommon::getFileType(mParams.imageFileName)).compare("ppm") != 0)
     {
@@ -373,7 +352,7 @@ bool SampleINT8API::prepareInput(const samplesCommon::BufferManager& buffers)
     std::string magic{""};
 
     vector<uint8_t> fileData(channels * height * width);
-    // Prepardde PPM Buffer to read the input image
+    // Prepare PPM Buffer to read the input image
     // samplesCommon::PPM<channels, height, width> ppm;
     // samplesCommon::readPPMFile(mParams.imageFileName, ppm);
 
@@ -383,7 +362,7 @@ bool SampleINT8API::prepareInput(const samplesCommon::BufferManager& buffers)
     infile.seekg(1, infile.cur);
     infile.read(reinterpret_cast<char*>(fileData.data()), width * height * channels);
 
-    float* hostInputBuffer = static_cast<float*>(buffers.getHostBuffer(mInOut["input"]));
+    input_precision_t* hostInputBuffer = static_cast<input_precision_t*>(buffers.getHostBuffer(mInOut["input"]));
 
     // Convert HWC to CHW and Normalize
     for (int c = 0; c < channels; ++c)
@@ -394,13 +373,11 @@ bool SampleINT8API::prepareInput(const samplesCommon::BufferManager& buffers)
             {
                 int dstIdx = c * height * width + h * width + w;
                 int srcIdx = h * width * channels + w * channels + c;
-                // This equation include 3 steps
-                // 1. Scale Image to range [0.f, 1.0f]
-                // 2. Normalize Image using per channel Mean and per channel Standard Deviation
-                // 3. Shuffle HWC to CHW form
-                hostInputBuffer[dstIdx]
-                    = (float(fileData[srcIdx]) / mParams.mPreproc.scale - mParams.mPreproc.mean.at(c))
-                    / mParams.mPreproc.std.at(c);
+                // This equation includes 2 steps:
+                // 1. Normalize Image using per-channel mean (here: uniformly 128).
+                // 2. Shuffle HWC to CHW form
+                // See https://github.com/mlperf/inference_results_v0.5/blob/master/closed/NVIDIA/scripts/preprocess_data.py#L131 for reference.
+                hostInputBuffer[dstIdx] = static_cast<input_precision_t>(fileData[srcIdx] - mParams.mPreproc.mean.at(c));
             }
         }
     }
@@ -408,8 +385,41 @@ bool SampleINT8API::prepareInput(const samplesCommon::BufferManager& buffers)
 }
 
 //!
+//! \brief Modified samplesCommon::classify with option to print output activation values
+//!
+template <typename result_vector_t>
+inline std::vector<std::string> SampleINT8API::classify_verbose(
+    const std::vector<std::string>& refVector, const result_vector_t& output, const size_t topBottomK) const
+{
+    auto indsTop = samplesCommon::argsort(output.cbegin(), output.cend(), true);
+    auto indsBottom = samplesCommon::argsort(output.cbegin(), output.cend(), false);
+    std::vector<std::string> result;
+    for (size_t k = 0; k < topBottomK; ++k)
+    {
+        const size_t index = indsTop[k];
+        result.push_back(refVector[index]);
+        // if (mParams.verbose)
+        // {
+        gLogInfo << "Top-" << (k + 1) << " predicted class, activation value: " << refVector[index] << ", "
+                    << output[index] << std::endl;
+        // }
+    }
+    // if (mParams.verbose)
+    // {
+    for (size_t k = 0; k < topBottomK; ++k)
+    {
+        const size_t index = indsBottom[k];
+        gLogInfo << "Bottom-" << (k + 1) << " predicted class, activation value: " << refVector[index] << ", "
+                    << output[index] << std::endl;
+    }
+    // }
+    return result;
+}
+
+//!
 //! \brief Verifies that the output is correct and prints it
 //!
+// template <typename output_precision_t>
 bool SampleINT8API::verifyOutput(const samplesCommon::BufferManager& buffers) const
 {
     // copy output host buffer data for further processing
@@ -418,20 +428,20 @@ bool SampleINT8API::verifyOutput(const samplesCommon::BufferManager& buffers) co
 
     auto inds = samplesCommon::argsort(output.cbegin(), output.cend(), true);
 
-    // read reference lables to generate prediction lables
+    // read reference labels to generate prediction labels
     vector<string> referenceVector;
     if (!samplesCommon::readReferenceFile(mParams.referenceFileName, referenceVector))
     {
         gLogError << "Unable to read reference file: " << mParams.referenceFileName << std::endl;
         return false;
     }
+    // vector<string> top5Result = samplesCommon::classify(referenceVector, output, 5);
+    vector<string> topKResult = classify_verbose(referenceVector, output, mParams.topBottomK);
 
-    vector<string> top5Result = samplesCommon::classify(referenceVector, output, 5);
-
-    gLogInfo << "SampleINT8API result: Detected:" << std::endl;
-    for (int i = 1; i <= 5; ++i)
+    gLogInfo << "SampleINT8API result - Detected:" << std::endl;
+    for (int i = 1; i <= mParams.topBottomK; ++i)
     {
-        gLogInfo << "[" << i << "]  " << top5Result[i - 1] << std::endl;
+        gLogInfo << "[" << i << "]  " << topKResult[i - 1] << std::endl;
     }
 
     return true;
@@ -489,51 +499,54 @@ Logger::TestResult SampleINT8API::build()
         return Logger::TestResult::kWAIVED;
     }
 
-    if (!builder->platformHasFastInt8())
-    {
-        gLogError << "Platform does not support INT8 inference. sampleINT8API can only run in INT8 Mode." << std::endl;
-        return Logger::TestResult::kWAIVED;
-    }
 
-    // Configure buider
-    config->setFlag(BuilderFlag::kGPU_FALLBACK);
+
+    // Configure builder
+    auto maxBatchSize = mParams.batchSize;
     config->setMaxWorkspaceSize(1_GiB);
 
-    // Enable INT8 model. Required to set custom per tensor dynamic range or INT8 Calibration
-    config->setFlag(BuilderFlag::kINT8);
-    // Mark calibrator as null. As user provides dynamic range for each tensor, no calibrator is required
-    config->setInt8Calibrator(nullptr);
-
-    auto maxBatchSize = mParams.batchSize;
-    if (mParams.dlaCore >= 0)
+    if (!mParams.fp32) // equivalent to INT8 mode (default)
     {
-        samplesCommon::enableDLA(builder.get(), config.get(), mParams.dlaCore);
-        if (maxBatchSize > builder->getMaxDLABatchSize())
+        config->setFlag(BuilderFlag::kSTRICT_TYPES);
+        if (!builder->platformHasFastInt8())
         {
-            std::cerr << "Requested batch size " << maxBatchSize << " is greater than the max DLA batch size of "
-                      << builder->getMaxDLABatchSize() << ". Reducing batch size accordingly." << std::endl;
-            maxBatchSize = builder->getMaxDLABatchSize();
+            gLogError << "Platform does not support INT8 inference. sampleINT8API can only run in INT8 Mode if --fp32 is not passed." << std::endl;
+            return Logger::TestResult::kWAIVED;
+        }
+        // Enable INT8 model. Required to set custom per tensor dynamic range or INT8 Calibration
+        config->setFlag(BuilderFlag::kINT8);
+        // Mark calibrator as null. As user provides dynamic range for each tensor, no calibrator is required
+        config->setInt8Calibrator(nullptr);
+
+        if(mParams.dlaCore >= 0)
+        {
+            samplesCommon::enableDLA(builder.get(), config.get(), mParams.dlaCore);
+            if (maxBatchSize > builder->getMaxDLABatchSize())
+            {
+                std::cerr << "Requested batch size " << maxBatchSize << " is greater than the max DLA batch size of "
+                          << builder->getMaxDLABatchSize() << ". Reducing batch size accordingly." << std::endl;
+                maxBatchSize = builder->getMaxDLABatchSize();
+            }
+        }
+        else if (mParams.safeGpuInt8)
+        {
+            builder->setEngineCapability(nvinfer1::EngineCapability::kSAFE_GPU);
+        }
+
+        if (!setDynamicRange(network))
+        {
+            gLogError << "Unable to set per-tensor dynamic range." << std::endl;
+            return Logger::TestResult::kFAILED;
         }
     }
     builder->setMaxBatchSize(maxBatchSize);
-
-    // force layer to execute with required precision
-    config->setFlag(BuilderFlag::kSTRICT_TYPES);
-    setLayerPrecision(network);
-
-    // set INT8 Per Tensor Dynamic range
-    if (!setDynamicRange(network))
-    {
-        gLogError << "Unable to set per tensor dynamic range." << std::endl;
-        return Logger::TestResult::kFAILED;
-    }
 
     // build TRT engine
     mEngine = std::shared_ptr<nvinfer1::ICudaEngine>(
         builder->buildEngineWithConfig(*network, *config), samplesCommon::InferDeleter());
     if (!mEngine)
     {
-        gLogError << "Unable to build cuda engine." << std::endl;
+        gLogError << "Unable to build CUDA engine." << std::endl;
         return Logger::TestResult::kFAILED;
     }
 
@@ -566,11 +579,18 @@ Logger::TestResult SampleINT8API::infer()
     {
         return Logger::TestResult::kFAILED;
     }
-
     // Read the input data into the managed buffers
     // There should be just 1 input tensor
-
-    if (!prepareInput(buffers))
+    bool prepareInputSuccess = false;
+    if (mParams.fp32)
+    {
+        prepareInputSuccess = prepareInput<float>(buffers);
+    }
+    else
+    {
+        prepareInputSuccess = prepareInput<char>(buffers);
+    }
+    if (!prepareInputSuccess)
     {
         return Logger::TestResult::kFAILED;
     }
@@ -617,11 +637,14 @@ struct SampleINT8APIArgs : public samplesCommon::Args
 {
     bool verbose{false};
     bool writeNetworkTensors{false};
-    std::string modelFileName{"resnet50.onnx"};
+    std::string modelFileName{"mobilenet_quantized_opt.onnx"};
     std::string imageFileName{"airliner.ppm"};
     std::string referenceFileName{"reference_labels.txt"};
-    std::string dynamicRangeFileName{"resnet50_per_tensor_dynamic_range.txt"};
+    std::string dynamicRangeFileName{"mobilenet_last_dynamic_range.txt"};
     std::string networkTensorsFileName{"network_tensors.txt"};
+    int topBottomK{5};
+    bool runInFp32{false};
+    bool safeGpuInt8{false};
 };
 
 //! \brief This function parses arguments specific to SampleINT8API
@@ -654,17 +677,21 @@ bool parseSampleINT8APIArgs(SampleINT8APIArgs& args, int argc, char* argv[])
         {
             args.dynamicRangeFileName = (argv[i] + 9);
         }
-        else if (!strncmp(argv[i], "--int8", 6))
+        else if (!strncmp(argv[i], "--fp32", 6))
         {
-            args.runInInt8 = true;
-        }
-        else if (!strncmp(argv[i], "--fp16", 6))
-        {
-            args.runInFp16 = true;
+            args.runInFp32 = true;
         }
         else if (!strncmp(argv[i], "--useDLACore=", 13))
         {
             args.useDLACore = std::stoi(argv[i] + 13);
+        }
+        else if (!strncmp(argv[i], "--topBottomK=", 13))
+        {
+            args.topBottomK = std::stoi(argv[i] + 13);
+        }
+        else if (!strncmp(argv[i], "--safeGpuInt8", 9))
+        {
+            args.safeGpuInt8 = true;
         }
         else if (!strncmp(argv[i], "--data=", 7))
         {
@@ -689,6 +716,22 @@ bool parseSampleINT8APIArgs(SampleINT8APIArgs& args, int argc, char* argv[])
             return false;
         }
     }
+    if ((args.useDLACore >= 0) && (args.runInFp32))
+    {
+        gLogError << "Cannot set --useDLACore=N (where N>=0) at the same time as --fp32. "
+                     "Exiting." << std::endl;
+        return false;
+    }
+
+    if ((args.safeGpuInt8) && ((args.runInFp32) || (args.useDLACore >= 0)))
+    {
+        gLogError << "Tried to set --safeGpuInt8 with --useDLACore=N (where N>=0) or --fp32. "
+                     "For safe DLA inference, please save DLA loadable, "
+                     "then use e.g. dla_safety_runtime to run inference with saved DLA loadable, "
+                     "or alternatively run with your own application" << std::endl;
+        return false;
+    }
+
     return true;
 }
 
@@ -738,6 +781,9 @@ SampleINT8APIParams initializeSampleParams(SampleINT8APIArgs args)
     params.dlaCore = args.useDLACore;
     params.writeNetworkTensors = args.writeNetworkTensors;
     params.networkTensorsFileName = args.networkTensorsFileName;
+    params.topBottomK = args.topBottomK;
+    params.fp32 = args.runInFp32;
+    params.safeGpuInt8 = args.safeGpuInt8;
     validateInputParams(params);
     return params;
 }
@@ -747,37 +793,49 @@ SampleINT8APIParams initializeSampleParams(SampleINT8APIArgs args)
 //!
 void printHelpInfo()
 {
-    std::cout << "Usage: ./sample_int8_api [-h or --help] [--model=model_file] "
-                 "[--ranges=per_tensor_dynamic_range_file] [--image=image_file] [--reference=reference_file] "
-                 "[--data=/path/to/data/dir] [--useDLACore=<int>] [-v or --verbose]\n";
-    std::cout << "-h or --help. Display This help information" << std::endl;
-    std::cout << "--model=model_file.onnx or /absolute/path/to/model_file.onnx. Generate model file using README.md in "
-                 "case it does not exists. Default to resnet50.onnx"
-              << std::endl;
-    std::cout << "--image=image.ppm or /absolute/path/to/image.ppm. Image to infer. Defaults to airlines.ppm"
-              << std::endl;
-    std::cout << "--reference=reference.txt or /absolute/path/to/reference.txt. Reference labels file. Defaults to "
-                 "reference_labels.txt"
-              << std::endl;
-    std::cout << "--ranges=ranges.txt or /absolute/path/to/ranges.txt. Specify custom per tensor dynamic range for the "
-                 "network. Defaults to resnet50_per_tensor_dynamic_range.txt"
-              << std::endl;
-    std::cout << "--write_tensors. Option to generate file containing network tensors name. By default writes to "
-                 "network_tensors.txt file. To provide user defined file name use additional option "
-                 "--network_tensors_file. See --network_tensors_file option usage for more detail."
-              << std::endl;
-    std::cout << "--network_tensors_file=network_tensors.txt or /absolute/path/to/network_tensors.txt. This option "
-                 "needs to be used with --write_tensors option. Specify file name (will write to current execution "
-                 "directory) or absolute path to file name to write network tensor names file. Dynamic range "
-                 "corresponding to each network tensor is required to run the sample. Defaults to network_tensors.txt"
-              << std::endl;
-    std::cout << "--data=/path/to/data/dir. Specify data directory to search for above files in case absolute paths to "
-                 "files are not provided. Defaults to data/samples/int8_api/ or data/int8_api/"
-              << std::endl;
-    std::cout << "--useDLACore=N. Specify a DLA engine for layers that support DLA. Value can range from 0 to n-1, "
-                 "where n is the number of DLA engines on the platform."
-              << std::endl;
-    std::cout << "--verbose. Outputs per tensor dynamic range and layer precision info for the network" << std::endl;
+    std::cout <<    "Usage: ./sample_mobilenet_int8_api [-h or --help] [--model=model_file] [--ranges=per_tensor_dynamic_range_file]\n"
+                    "[--image=image_file] [--reference=reference_file] [--write_tensors] [--network_tensors_file=network_tensors_file]\n"
+                    "[--data=/path/to/data/dir] [--useDLACore=<int>] [--topBottomK=<int>] [--fp32] [--safeGpuInt8]\n"
+                    "[-v or --verbose]"
+                    << std::endl;
+    std::cout <<    "-h or --help. Display This help information"<< std::endl;
+    std::cout <<    "--model=model_file.onnx or /absolute/path/to/model_file.onnx. Generate model file using README.md in case\n"
+                    "it does not exists. Defaults to mobilenet_quantized_opt.onnx."
+                    << std::endl;
+
+    std::cout <<    "--image=image.ppm or /absolute/path/to/image.ppm. Image to infer. Defaults to airliner.ppm."
+                    << std::endl;
+    std::cout <<    "--reference=reference.txt or /absolute/path/to/reference.txt. Reference labels file. Defaults to\n"
+                    "reference_labels.txt."
+                    << std::endl;
+    std::cout <<    "--ranges=ranges.txt or /absolute/path/to/ranges.txt. Specify custom per tensor dynamic range for the\n"
+                    "network. Defaults to mobilenet_last_dynamic_range.txt."
+                    << std::endl;
+    std::cout <<    "--write_tensors. Option to generate file containing network tensors name. By default writes to\n"
+                    "network_tensors.txt file. To provide user defined file name use additional option\n"
+                    "--network_tensors_file. See --network_tensors_file option usage for more detail."
+                    << std::endl;
+    std::cout <<    "--network_tensors_file=network_tensors.txt or /absolute/path/to/network_tensors.txt. This option\n"
+                     "needs to be used with --write_tensors option. Specify file name (will write to current execution\n"
+                     "directory) or absolute path to file name to write network tensor names file. Dynamic range\n"
+                     "corresponding to each network tensor is required to run the sample. Defaults to network_tensors.txt."
+                    << std::endl;
+    std::cout <<    "--data=/path/to/data/dir. Specify data directory to search for above files in case absolute paths to\n"
+                    "files are not provided. Defaults to data/samples/int8_api/ or data/int8_api/."
+                    << std::endl;
+    std::cout <<    "--useDLACore=N. Specify a DLA engine for layers that support DLA. Value can range from 0 to n-1,\n"
+                    "where n is the number of DLA engines on the platform."
+                    << std::endl;
+    std::cout <<    "--topBottomK=K. Specify how many Top-K results shall be output. If --verbose is set, both the Top-K\n"
+                    "and the Bottom-K predictions will be printed with their output activation values. Defaults to 5."
+                    << std::endl;
+    std::cout <<    "--fp32. Run inference at FP32 precision on GPU. Cannot be combined with --useDLACore=N (N>=0).\n"
+                    "Defaults to running inference at INT8 precision (--fp32 not set)."
+                    << std::endl;
+    std::cout <<    "--safeGpuInt8. Run inference in safe mode on GPU at INT8. Cannot be combined with --useDLACore=N (N>=0)\n"
+                    "and/or --fp32. Defaults to running inference in unsafe mode (--safeGpuInt8 not set)."
+                    << std::endl;
+    std::cout <<    "--verbose. Outputs per tensor dynamic range and layer precision info for the network." << std::endl;
 }
 
 int main(int argc, char** argv)
@@ -810,7 +868,10 @@ int main(int argc, char** argv)
     params = initializeSampleParams(args);
 
     SampleINT8API sample(params);
-    gLogInfo << "Building and running a INT8 GPU inference engine for " << params.modelFileName << std::endl;
+    std::string device = params.dlaCore < 0 ? "GPU" : "DLA";
+    std::string precision = params.fp32 ? "FP32" : "INT8";
+    gLogInfo << "Building and running a " << precision << " inference engine on " << device
+             << " for " << params.modelFileName << std::endl;
 
     auto buildStatus = sample.build();
     if (buildStatus == Logger::TestResult::kWAIVED)

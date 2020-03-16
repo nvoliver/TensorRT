@@ -19,7 +19,7 @@ set(OPENSOURCE_SAMPLES_LIST
     sampleFasterRCNN
     sampleGoogleNet
     sampleINT8
-    sampleINT8API
+    sampleMobileNetINT8API
     sampleMLP
     sampleMNIST
     sampleMNISTAPI
