@@ -811,9 +811,9 @@ void printHelpInfo()
     std::cout <<    "--ranges=ranges.txt or /absolute/path/to/ranges.txt. Specify custom per tensor dynamic range for the\n"
                     "network. Defaults to mobilenet_last_dynamic_range.txt."
                     << std::endl;
-    std::cout <<    "--write_tensors. Option to generate file containing network tensors name. By default writes to\n"
-                    "network_tensors.txt file. To provide user defined file name use additional option\n"
-                    "--network_tensors_file. See --network_tensors_file option usage for more detail."
+    std::cout <<    "--write_tensors. Option to generate file containing network tensors name. By default writes network_tensors.txt.\n"
+                    "To provide user defined file name use additional option --network_tensors_file. See --network_tensors_file option\n"
+                    "usage for more detail."
                     << std::endl;
     std::cout <<    "--network_tensors_file=network_tensors.txt or /absolute/path/to/network_tensors.txt. This option\n"
                      "needs to be used with --write_tensors option. Specify file name (will write to current execution\n"
@@ -826,8 +826,8 @@ void printHelpInfo()
     std::cout <<    "--useDLACore=N. Specify a DLA engine for layers that support DLA. Value can range from 0 to n-1,\n"
                     "where n is the number of DLA engines on the platform."
                     << std::endl;
-    std::cout <<    "--topBottomK=K. Specify how many Top-K results shall be output. If --verbose is set, both the Top-K\n"
-                    "and the Bottom-K predictions will be printed with their output activation values. Defaults to 5."
+    std::cout <<    "--topBottomK=K. Specify how many Top-K results shall be output. Both the Top-K and the Bottom-K predictions\n"
+                    "will be printed with their output activation values. Defaults to 5 (for Top-5 and Bottom-5 results)."
                     << std::endl;
     std::cout <<    "--fp32. Run inference at FP32 precision on GPU. Cannot be combined with --useDLACore=N (N>=0).\n"
                     "Defaults to running inference at INT8 precision (--fp32 not set)."

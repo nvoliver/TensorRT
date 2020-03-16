@@ -153,9 +153,9 @@ To see the full list of available options and their descriptions, use the `-h` o
 	reference_labels.txt.
 	--ranges=ranges.txt or /absolute/path/to/ranges.txt. Specify custom per tensor dynamic range for the
 	network. Defaults to mobilenet_last_dynamic_range.txt.
-	--write_tensors. Option to generate file containing network tensors name. By default writes to
-	network_tensors.txt file. To provide user defined file name use additional option
-	--network_tensors_file. See --network_tensors_file option usage for more detail.
+	--write_tensors. Option to generate file containing network tensors name. By default writes network_tensors.txt.
+	To provide user defined file name use additional option --network_tensors_file. See --network_tensors_file option
+	usage for more detail.
 	--network_tensors_file=network_tensors.txt or /absolute/path/to/network_tensors.txt. This option
 	needs to be used with --write_tensors option. Specify file name (will write to current execution
 	directory) or absolute path to file name to write network tensor names file. Dynamic range
@@ -164,14 +164,13 @@ To see the full list of available options and their descriptions, use the `-h` o
 	files are not provided. Defaults to data/samples/int8_api/ or data/int8_api/.
 	--useDLACore=N. Specify a DLA engine for layers that support DLA. Value can range from 0 to n-1,
 	where n is the number of DLA engines on the platform.
-	--topBottomK=K. Specify how many Top-K results shall be output. If --verbose is set, both the Top-K
-	and the Bottom-K predictions will be printed with their output activation values. Defaults to 5.
+	--topBottomK=K. Specify how many Top-K results shall be output. Both the Top-K and the Bottom-K predictions
+	will be printed with their output activation values. Defaults to 5 (for Top-5 and Bottom-5 results).
 	--fp32. Run inference at FP32 precision on GPU. Cannot be combined with --useDLACore=N (N>=0).
 	Defaults to running inference at INT8 precision (--fp32 not set).
 	--safeGpuInt8. Run inference in safe mode on GPU at INT8. Cannot be combined with --useDLACore=N (N>=0)
 	and/or --fp32. Defaults to running inference in unsafe mode (--safeGpuInt8 not set).
 	--verbose. Outputs per tensor dynamic range and layer precision info for the network.
-
 ```
 
 

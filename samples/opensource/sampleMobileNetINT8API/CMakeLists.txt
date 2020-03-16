@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 SET(SAMPLE_SOURCES
-    sampleINT8API.cpp
+    sampleMobileNetINT8API.cpp
 )
 
 set(SAMPLE_PARSERS "onnx")
