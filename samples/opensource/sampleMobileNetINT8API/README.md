@@ -163,7 +163,8 @@ To see the full list of available options and their descriptions, use the `-h` o
 	--data=/path/to/data/dir. Specify data directory to search for above files in case absolute paths to
 	files are not provided. Defaults to data/samples/int8_api/ or data/int8_api/.
 	--useDLACore=N. Specify a DLA engine for layers that support DLA. Value can range from 0 to n-1,
-	where n is the number of DLA engines on the platform.
+	where n is the number of DLA engines on the platform. For example, if there are n=2 DLA engines available,
+	set N=0 for selecting the first engine or N=1 for the second engine. Defaults to -1 (no DLA usage, only GPU).
 	--topBottomK=K. Specify how many Top-K results shall be output. Both the Top-K and the Bottom-K predictions
 	will be printed with their output activation values. Defaults to 5 (for Top-5 and Bottom-5 results).
 	--fp32. Run inference at FP32 precision on GPU. Cannot be combined with --useDLACore=N (N>=0).

@@ -824,7 +824,8 @@ void printHelpInfo()
                     "files are not provided. Defaults to data/samples/int8_api/ or data/int8_api/."
                     << std::endl;
     std::cout <<    "--useDLACore=N. Specify a DLA engine for layers that support DLA. Value can range from 0 to n-1,\n"
-                    "where n is the number of DLA engines on the platform."
+                    "where n is the number of DLA engines on the platform. For example, if there are n=2 DLA engines available,\n"
+                    "set N=0 for selecting the first engine or N=1 for the second engine. Defaults to -1 (no DLA usage, only GPU)."
                     << std::endl;
     std::cout <<    "--topBottomK=K. Specify how many Top-K results shall be output. Both the Top-K and the Bottom-K predictions\n"
                     "will be printed with their output activation values. Defaults to 5 (for Top-5 and Bottom-5 results)."
